@@ -1,6 +1,0 @@
-requests
-PyExecJS
-lxml
-loguru
-pathos
-
