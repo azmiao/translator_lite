@@ -1,6 +1,6 @@
 # github仓库：
 
-https://github.com/azmiao/translators-lite
+https://github.com/azmiao/translator_lite
 
 # 本翻译功能源自：
 
