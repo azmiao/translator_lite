@@ -2,29 +2,22 @@
 # author=UlionTse
 
 """MIT License
-
-Copyright (c) 2022 UlionTse
-
+Copyright (c) 2017-2022 UlionTse
 Warning: Prohibition of commercial use!
 This module is designed to help students and individuals with translation services.
 For commercial use, please purchase API services from translation suppliers.
-
 Don't make high frequency requests!
 Enterprises provide free services, we should be grateful instead of making trouble.
-
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
-
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software. You may obtain a copy of the
 License at
-
     https://github.com/uliontse/translators/blob/master/LICENSE
-
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -88,7 +81,7 @@ class Tse:
     @staticmethod
     def check_language(from_language, to_language, language_map, output_zh=None, output_auto='auto'):
         auto_pool = ('auto', 'auto-detect')
-        zh_pool = ('zh', 'zh-CN', 'zh-CHS', 'zh-Hans')
+        zh_pool = ('zh', 'zh-CN', 'zh-CHS', 'zh-Hans', 'cn', 'chi')
         from_language = output_auto if from_language in auto_pool else from_language
         from_language = output_zh if output_zh and from_language in zh_pool else from_language
         to_language = output_zh if output_zh and to_language in zh_pool else to_language
@@ -104,24 +97,24 @@ class Tse:
     @staticmethod
     def make_temp_language_map(from_language, to_language):
         warnings.warn('Did not get a complete language map. And do not use `from_language="auto"`.')
-        assert from_language != 'auto' and to_language != 'auto' and from_language != to_language
+        if not (to_language != 'auto' and from_language != to_language):
+            raise TranslatorError("to_language != 'auto' and from_language != to_language")
         lang_list = [from_language, to_language]
-        return {}.fromkeys(lang_list, lang_list)
+        return {}.fromkeys(lang_list, lang_list) if from_language != 'auto' else {from_language: to_language, to_language: to_language}
 
     @staticmethod
     def check_query_text(query_text, if_ignore_limit_of_length=False, limit_of_length=5000):
         if not isinstance(query_text, str):
-            raise TranslatorError('query_text is not string.')
+            raise TranslatorError('query_text is not string type.')
         query_text = query_text.strip()
-        if not query_text:
-            return ''
         length = len(query_text)
-        if length > limit_of_length and not if_ignore_limit_of_length:
+        if length >= limit_of_length and not if_ignore_limit_of_length:
             raise TranslatorError('The length of the text to be translated exceeds the limit.')
         else:
-            if length > limit_of_length:
-                warnings.warn(f'The translation ignored the excess[above 5000]. Length of `query_text` is {length}.')
-                return query_text[:limit_of_length]
+            if length >= limit_of_length:
+                warnings.warn(f'The translation ignored the excess[above {limit_of_length}]. Length of `query_text` is {length}.')
+                warnings.warn('The translation result will be incomplete.')
+                return query_text[:limit_of_length-1]
         return query_text
 
 class TranslatorError(Exception):
@@ -140,6 +133,7 @@ class Youdao(Tse):
         self.language_map = None
         self.query_count = 0
         self.output_zh = 'zh-CHS'
+        self.input_limit = 5000
     
     def get_language_map(self, host_html):
         et = lxml.etree.HTML(host_html)
@@ -206,7 +200,9 @@ class Youdao(Tse):
         proxies = kwargs.get('proxies', None)
         sleep_seconds = kwargs.get('sleep_seconds', random.random())
         if_ignore_limit_of_length = kwargs.get('if_ignore_limit_of_length', False)
-        query_text = self.check_query_text(query_text, if_ignore_limit_of_length)
+        query_text = self.check_query_text(query_text, if_ignore_limit_of_length, limit_of_length=self.input_limit)
+        if not query_text:
+            return ''
 
         with requests.Session() as ss:
             host_html = ss.get(self.host_url, headers=self.host_headers, timeout=timeout, proxies=proxies).text
@@ -230,7 +226,6 @@ class Youdao(Tse):
 _youdao = Youdao()
 youdao = _youdao.youdao_api
 
-@Tse.time_stat
 def translate_html(html_text:str, to_language:str='en', translator:Callable='auto', n_jobs:int=-1, **kwargs) -> str:
     """
     Translate the displayed content of html without changing the html structure.
@@ -246,15 +241,20 @@ def translate_html(html_text:str, to_language:str='en', translator:Callable='aut
     """
     if kwargs:
         for param in ('query_text', 'to_language', 'is_detail_result'):
-            assert param not in kwargs, f'{param} should not be in `**kwargs`.'
+            if param in kwargs:
+                raise TranslatorError(f'{param} should not be in `**kwargs`.')
     kwargs.update({'sleep_seconds': 0})
 
     n_jobs = os.cpu_count() if n_jobs <= 0 else n_jobs
 
     pattern = re.compile(r"(?:^|(?<=>))([\s\S]*?)(?:(?=<)|$)") #TODO: <code></code> <div class="codetext notranslate">
-    sentence_list = set(pattern.findall(html_text))
-    _map_translate_func = lambda sentence: (sentence,translator(query_text=sentence, to_language=to_language, **kwargs))
-    result_list = pathos.multiprocessing.ProcessPool(n_jobs).map(_map_translate_func, sentence_list)
-    result_dict = {text: ts_text for text,ts_text in result_list}
+    sentence_list = list(set(pattern.findall(html_text)))
+    _map_translate_func = lambda sentence: (sentence, translator(query_text=sentence, to_language=to_language, **kwargs))
+
+    pool = pathos.multiprocessing.ProcessPool(n_jobs)
+    result_list = pool.map(_map_translate_func, sentence_list)
+    pool.close()
+
+    result_dict = {text: ts_text for text, ts_text in result_list}
     _get_result_func = lambda k: result_dict.get(k.group(1), '')
     return pattern.sub(repl=_get_result_func, string=html_text)
