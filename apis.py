@@ -44,7 +44,7 @@ import requests
 class Tse:
     def __init__(self):
         self.author = 'Ulion.Tse'
-    
+
     @staticmethod
     def time_stat(func):
         @functools.wraps(func)
@@ -85,7 +85,7 @@ class Tse:
         from_language = output_auto if from_language in auto_pool else from_language
         from_language = output_zh if output_zh and from_language in zh_pool else from_language
         to_language = output_zh if output_zh and to_language in zh_pool else to_language
-        
+
         if from_language != output_auto and from_language not in language_map:
             raise TranslatorError('Unsupported from_language[{}] in {}.'.format(from_language, sorted(language_map.keys())))
         elif to_language not in language_map:
@@ -112,9 +112,10 @@ class Tse:
             raise TranslatorError('The length of the text to be translated exceeds the limit.')
         else:
             if length >= limit_of_length:
-                warnings.warn(f'The translation ignored the excess[above {limit_of_length}]. Length of `query_text` is {length}.')
+                warnings.warn(
+                    f'The translation ignored the excess[above {limit_of_length}]. Length of `query_text` is {length}.')
                 warnings.warn('The translation result will be incomplete.')
-                return query_text[:limit_of_length-1]
+                return query_text[:limit_of_length - 1]
         return query_text
 
 class TranslatorError(Exception):
@@ -134,7 +135,7 @@ class Youdao(Tse):
         self.query_count = 0
         self.output_zh = 'zh-CHS'
         self.input_limit = 5000
-    
+
     def get_language_map(self, host_html):
         et = lxml.etree.HTML(host_html)
         lang_list = et.xpath('//*[@id="languageSelect"]/li/@data-value')
@@ -153,11 +154,11 @@ class Youdao(Tse):
         except:
             r = ss.get(self.get_old_sign_url, headers=self.host_headers, timeout=timeout, proxies=proxies)
             r.raise_for_status()
-        sign = re.compile('n.md5\("fanyideskweb"\+e\+i\+"(.*?)"\)').findall(r.text)
-        return sign[0] if sign and sign != [''] else "Tbh5E8=q6U3EXe+&L[4c@" #v1.0.31
+        sign = re.compile('md5\("fanyideskweb" \+ e \+ i \+ "(.*?)"\)').findall(r.text)
+        return sign[0] if sign and sign != [''] else "Ygy_4c=r#e#4EX^NUGUc5"  # v1.1.10
 
     def get_form(self, query_text, from_language, to_language, sign_key):
-        ts = str(int(time.time()*1000))
+        ts = str(int(time.time() * 1000))
         salt = str(ts) + str(random.randrange(0, 10))
         sign_text = ''.join(['fanyideskweb', query_text, salt, sign_key])
         sign = hashlib.md5(sign_text.encode()).hexdigest()
@@ -166,22 +167,23 @@ class Youdao(Tse):
             'i': query_text,
             'from': from_language,
             'to': to_language,
-            'lts': ts,                  # r = "" + (new Date).getTime()
-            'salt': salt,               # i = r + parseInt(10 * Math.random(), 10)
-            'sign': sign,               # n.md5("fanyideskweb" + e + i + "n%A-rKaT5fb[Gy?;N5@Tj"),e=text
-            'bv': bv,                   # n.md5(navigator.appVersion)
+            'lts': ts,  # r = "" + (new Date).getTime()
+            'salt': salt,  # i = r + parseInt(10 * Math.random(), 10)
+            'sign': sign,  # n.md5("fanyideskweb" + e + i + "n%A-rKaT5fb[Gy?;N5@Tj"),e=text
+            'bv': bv,  # n.md5(navigator.appVersion)
             'smartresult': 'dict',
             'client': 'fanyideskweb',
             'doctype': 'json',
             'version': '2.1',
             'keyfrom': 'fanyi.web',
-            'action': 'FY_BY_DEFAULT',  # not time.["FY_BY_REALTlME","FY_BY_DEFAULT"]
+            'action': 'FY_BY_REALTlME',
+            # not time.["FY_BY_REALTlME", "FY_BY_DEFAULT", "FY_BY_CLICKBUTTION", "lan-select"]
             # 'typoResult': 'false'
         }
         return form
 
     # @Tse.time_stat
-    def youdao_api(self, query_text:str, from_language:str='auto', to_language:str='en', **kwargs) -> Union[str,dict]:
+    def youdao_api(self, query_text: str, from_language: str = 'auto', to_language: str = 'en', **kwargs) -> Union[str, dict]:
         """
         https://fanyi.youdao.com
         :param query_text: str, must.
@@ -207,10 +209,9 @@ class Youdao(Tse):
         with requests.Session() as ss:
             host_html = ss.get(self.host_url, headers=self.host_headers, timeout=timeout, proxies=proxies).text
             if not self.language_map:
-                 self.language_map = self.get_language_map(host_html)
+                self.language_map = self.get_language_map(host_html)
             sign_key = self.get_sign_key(ss, host_html, timeout, proxies)
-            from_language, to_language = self.check_language(from_language, to_language, self.language_map,output_zh=self.output_zh)
-            from_language, to_language = ('auto', 'auto') if from_language == 'auto' else (from_language, to_language)
+            from_language, to_language = self.check_language(from_language, to_language, self.language_map, output_zh=self.output_zh)
 
             form = self.get_form(query_text, from_language, to_language, sign_key)
             r = ss.post(self.api_url, data=form, headers=self.api_headers, timeout=timeout, proxies=proxies)
@@ -218,7 +219,7 @@ class Youdao(Tse):
             data = r.json()
             if data['errorCode'] == 40:
                 raise TranslatorError('Invalid translation of `from_language[auto]`, '
-                                'please specify parameters of `from_language` or `to_language`.')
+                                      'please specify parameters of `from_language` or `to_language`.')
         time.sleep(sleep_seconds)
         self.query_count += 1
         return data if is_detail_result else ' '.join(item['tgt'] if item['tgt'] else '\n' for result in data['translateResult'] for item in result)
@@ -226,7 +227,7 @@ class Youdao(Tse):
 _youdao = Youdao()
 youdao = _youdao.youdao_api
 
-def translate_html(html_text:str, to_language:str='en', translator:Callable='auto', n_jobs:int=-1, **kwargs) -> str:
+def translate_html(html_text: str, to_language: str = 'en', translator: Callable = 'auto', n_jobs: int = -1, **kwargs) -> str:
     """
     Translate the displayed content of html without changing the html structure.
     :param html_text: str, html format.
@@ -247,13 +248,13 @@ def translate_html(html_text:str, to_language:str='en', translator:Callable='aut
 
     n_jobs = os.cpu_count() if n_jobs <= 0 else n_jobs
 
-    pattern = re.compile(r"(?:^|(?<=>))([\s\S]*?)(?:(?=<)|$)") #TODO: <code></code> <div class="codetext notranslate">
+    pattern = re.compile(r"(?:^|(?<=>))([\s\S]*?)(?:(?=<)|$)")  # TODO: <code></code> <div class="codetext notranslate">
     sentence_list = list(set(pattern.findall(html_text)))
-    _map_translate_func = lambda sentence: (sentence, translator(query_text=sentence, to_language=to_language, **kwargs))
+    _map_translate_func = lambda sentence: (
+    sentence, translator(query_text=sentence, to_language=to_language, **kwargs))
 
-    pool = pathos.multiprocessing.ProcessPool(n_jobs)
-    result_list = pool.map(_map_translate_func, sentence_list)
-    pool.close()
+    with pathos.multiprocessing.ProcessPool(n_jobs) as pool:
+        result_list = pool.map(_map_translate_func, sentence_list)
 
     result_dict = {text: ts_text for text, ts_text in result_list}
     _get_result_func = lambda k: result_dict.get(k.group(1), '')
