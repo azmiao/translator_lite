@@ -1,5 +1,6 @@
 # coding=utf-8
 # author=UlionTse
+# modify=AZMIAO
 
 """MIT License
 Copyright (c) 2017-2022 UlionTse
@@ -27,7 +28,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-import os
 import re
 import time
 import random
@@ -35,23 +35,22 @@ import urllib.parse
 import hashlib
 import functools
 import warnings
-from typing import Union, Callable
+from typing import Union
 
-import pathos.multiprocessing
 import lxml.etree
+import execjs
 import requests
 
 class Tse:
     def __init__(self):
         self.author = 'Ulion.Tse'
+        self.modify = 'AZMIAO'
 
     @staticmethod
     def time_stat(func):
         @functools.wraps(func)
         def _wrapper(*args, **kwargs):
-            t1 = time.time()
             r = func(*args, **kwargs)
-            t2 = time.time()
             return r
         return _wrapper
 
@@ -95,14 +94,6 @@ class Tse:
         return from_language, to_language
 
     @staticmethod
-    def make_temp_language_map(from_language, to_language):
-        warnings.warn('Did not get a complete language map. And do not use `from_language="auto"`.')
-        if not (to_language != 'auto' and from_language != to_language):
-            raise TranslatorError("to_language != 'auto' and from_language != to_language")
-        lang_list = [from_language, to_language]
-        return {}.fromkeys(lang_list, lang_list) if from_language != 'auto' else {from_language: to_language, to_language: to_language}
-
-    @staticmethod
     def check_query_text(query_text, if_ignore_limit_of_length=False, limit_of_length=5000):
         if not isinstance(query_text, str):
             raise TranslatorError('query_text is not string type.')
@@ -120,6 +111,190 @@ class Tse:
 
 class TranslatorError(Exception):
     pass
+
+class Baidu(Tse):
+    def __init__(self):
+        super().__init__()
+        self.host_url = 'https://fanyi.baidu.com'
+        self.api1_url = 'https://fanyi.baidu.com/transapi'
+        self.api2_url = 'https://fanyi.baidu.com/v2transapi'
+        self.langdetect_url = 'https://fanyi.baidu.com/langdetect'
+        self.get_sign_old_url = 'https://fanyi-cdn.cdn.bcebos.com/static/translation/pkg/index_bd36cef.js'
+        self.get_sign_url = None
+        self.get_sign_pattern = 'https://fanyi-cdn.cdn.bcebos.com/static/translation/pkg/index_(.*?).js'
+        self.host_headers = self.get_headers(self.host_url, if_api=False)
+        self.api_headers = self.get_headers(self.host_url, if_api=True)
+        self.language_map = None
+        self.token = None
+        self.sign = None
+        self.acs_token = None
+        self.query_count = 0
+        self.output_zh = 'zh'
+        self.input_limit = 5000
+
+    def get_language_map(self, host_html):
+        lang_str = re.compile('langMap: {(.*?)}').search(host_html.replace('\n', '').replace('  ', '')).group()[8:]
+        return execjs.eval(lang_str)
+
+    def get_sign(self, query_text, host_html, ss, timeout, proxies):
+        gtk_list = re.compile("""window.gtk = '(.*?)';|window.gtk = "(.*?)";""").findall(host_html)[0]
+        gtk = gtk_list[0] or gtk_list[1]
+
+        try:
+            if not self.get_sign_url:
+                self.get_sign_url = re.compile(self.get_sign_pattern).search(host_html).group(0)
+            r = ss.get(self.get_sign_url, headers=self.host_headers, timeout=timeout, proxies=proxies)
+            r.raise_for_status()
+        except:
+            r = ss.get(self.get_sign_old_url, headers=self.host_headers, timeout=timeout, proxies=proxies)
+            r.raise_for_status()
+        sign_html = r.text
+
+        begin_label = 'define("translation:widget/translate/input/pGrab",function(r,o,t){'
+        end_label = 'var i=null;t.exports=e});'
+
+        sign_js = sign_html[sign_html.find(begin_label) + len(begin_label):sign_html.find(end_label)]
+        sign_js = sign_js.replace('function e(r)', 'function e(r,i)')
+        return execjs.compile(sign_js).call('e', query_text, gtk)
+
+    def get_tk(self, host_html):
+        tk_list = re.compile("""token: '(.*?)',|token: "(.*?)",""").findall(host_html)[0]
+        return tk_list[0] or tk_list[1]
+
+    def get_acs_token(self):
+        pass  # todo
+
+    def baidu_api_v1(self, query_text: str, from_language: str = 'auto', to_language: str = 'en', **kwargs) -> Union[str, dict]:
+        """
+        https://fanyi.baidu.com
+        :param query_text: str, must.  # attention emoji
+        :param from_language: str, default 'auto'.
+        :param to_language: str, default 'en'.
+        :param **kwargs:
+                :param if_ignore_limit_of_length: boolean, default False.
+                :param is_detail_result: boolean, default False.
+                :param timeout: float, default None.
+                :param proxies: dict, default None.
+                :param sleep_seconds: float, default `random.random()`.
+        :return: str or dict
+        """
+        is_detail_result = kwargs.get('is_detail_result', False)
+        timeout = kwargs.get('timeout', None)
+        proxies = kwargs.get('proxies', None)
+        sleep_seconds = kwargs.get('sleep_seconds', random.random())
+        if_ignore_limit_of_length = kwargs.get('if_ignore_limit_of_length', False)
+        query_text = self.check_query_text(query_text, if_ignore_limit_of_length, limit_of_length=self.input_limit)
+        if not query_text:
+            return ''
+
+        with requests.Session() as ss:
+            _ = ss.get(self.host_url, headers=self.host_headers, timeout=timeout, proxies=proxies)  # must twice, send cookies.
+            host_html = ss.get(self.host_url, headers=self.host_headers, timeout=timeout, proxies=proxies).text
+            if not self.language_map:
+                self.language_map = self.get_language_map(host_html)
+            from_language, to_language = self.check_language(from_language, to_language, self.language_map, output_zh=self.output_zh)
+
+            form_data = {
+                'from': from_language,
+                'to': to_language,
+                'query': query_text,
+                'source': 'txt',
+            }
+            r = ss.post(self.api1_url, data=form_data, headers=self.api_headers, timeout=timeout, proxies=proxies)
+            r.raise_for_status()
+            data = r.json()
+        time.sleep(sleep_seconds)
+        self.query_count += 1
+        return data if is_detail_result else data['data'][0]['dst']
+
+    # @Tse.time_stat
+    def baidu_api_v2(self, query_text: str, from_language: str = 'auto', to_language: str = 'en', **kwargs) -> Union[str, dict]:
+        """
+        https://fanyi.baidu.com
+        :param query_text: str, must.  # attention emoji
+        :param from_language: str, default 'auto'.
+        :param to_language: str, default 'en'.
+        :param **kwargs:
+                :param professional_field: str, default 'common'. Choose from ('common', 'medicine', 'electronics', 'mechanics', 'novel')
+                :param if_ignore_limit_of_length: boolean, default False.
+                :param is_detail_result: boolean, default False.
+                :param timeout: float, default None.
+                :param proxies: dict, default None.
+                :param sleep_seconds: float, default `random.random()`.
+        :return: str or dict
+        """
+
+        use_domain = kwargs.get('professional_field', 'common')
+        if use_domain not in ('common', 'medicine', 'electronics', 'mechanics', 'novel'):  # only support zh-en, en-zh.
+            raise TranslatorError('Your [professional_field] is wrong.')
+        is_detail_result = kwargs.get('is_detail_result', False)
+        timeout = kwargs.get('timeout', None)
+        proxies = kwargs.get('proxies', None)
+        sleep_seconds = kwargs.get('sleep_seconds', random.random())
+        if_ignore_limit_of_length = kwargs.get('if_ignore_limit_of_length', False)
+        query_text = self.check_query_text(query_text, if_ignore_limit_of_length, limit_of_length=self.input_limit)
+        if not query_text:
+            return ''
+
+        with requests.Session() as ss:
+            _ = ss.get(self.host_url, headers=self.host_headers, timeout=timeout, proxies=proxies)  # must twice, send cookies.
+            host_html = ss.get(self.host_url, headers=self.host_headers, timeout=timeout, proxies=proxies).text
+
+            if not self.language_map:
+                self.language_map = self.get_language_map(host_html)
+            if not self.token:
+                self.token = self.get_tk(host_html)
+
+            self.sign = self.get_sign(query_text, host_html, ss, timeout, proxies)
+            from_language, to_language = self.check_language(from_language, to_language, self.language_map, output_zh=self.output_zh)
+
+            if from_language == 'auto':
+                res = ss.post(self.langdetect_url, headers=self.api_headers, data={"query": query_text}, timeout=timeout, proxies=proxies)
+                from_language = res.json()['lan']
+
+            params = {"from": from_language, "to": to_language}
+            form_data = {
+                "from": from_language,
+                "to": to_language,
+                "query": query_text,  # from urllib.parse import quote_plus
+                "transtype": "translang",  # ["translang","realtime"]
+                "simple_means_flag": "3",
+                "sign": self.sign,
+                "token": self.token,
+                "domain": use_domain,
+            }
+            form_data = urllib.parse.urlencode(form_data).encode('utf-8')
+            # self.api_headers.update({'Acs-Token': self.acs_token})  # todo
+            r = ss.post(self.api2_url, params=params, data=form_data, headers=self.api_headers, timeout=timeout, proxies=proxies)
+            r.raise_for_status()
+            data = r.json()
+        time.sleep(sleep_seconds)
+        self.query_count += 1
+        return data if is_detail_result else '\n'.join([x['dst'] for x in data['trans_result']['data']])
+
+    # @Tse.time_stat
+    def baidu_api(self, query_text: str, from_language: str = 'auto', to_language: str = 'en', **kwargs) -> Union[str, dict]:
+        """
+        https://fanyi.baidu.com
+        :param query_text: str, must.  # attention emoji
+        :param from_language: str, default 'auto'.
+        :param to_language: str, default 'en'.
+        :param **kwargs:
+                :param version: str, default 'v1'. Choose from ('v1', 'v2').
+                :param professional_field: str, default 'common'. Choose from ('common', 'medicine', 'electronics', 'mechanics')
+                :param if_ignore_limit_of_length: boolean, default False.
+                :param is_detail_result: boolean, default False.
+                :param timeout: float, default None.
+                :param proxies: dict, default None.
+                :param sleep_seconds: float, default `random.random()`.
+        :return: str or dict
+        """
+        use_version = kwargs.get('version', 'v1')
+        if use_version not in ('v1', 'v2'):
+            raise TranslatorError('Your parameter [version] is wrong.')
+        if use_version == 'v1':
+            return self.baidu_api_v1(query_text, from_language, to_language, **kwargs)
+        return self.baidu_api_v2(query_text, from_language, to_language, **kwargs)
 
 class Youdao(Tse):
     def __init__(self):
@@ -224,38 +399,7 @@ class Youdao(Tse):
         self.query_count += 1
         return data if is_detail_result else ' '.join(item['tgt'] if item['tgt'] else '\n' for result in data['translateResult'] for item in result)
 
+_baidu = Baidu()
+baidu = _baidu.baidu_api
 _youdao = Youdao()
 youdao = _youdao.youdao_api
-
-def translate_html(html_text: str, to_language: str = 'en', translator: Callable = 'auto', n_jobs: int = -1, **kwargs) -> str:
-    """
-    Translate the displayed content of html without changing the html structure.
-    :param html_text: str, html format.
-    :param to_language: str, default: 'en'.
-    :param translator: translator, default 'auto', means ts.bing
-    :param n_jobs: int, default -1, means os.cpu_cnt().
-    :param **kwargs:
-        :param if_ignore_limit_of_length: boolean, default False.
-        :param timeout: float, default None.
-        :param proxies: dict, default None.
-    :return: str, html format.
-    """
-    if kwargs:
-        for param in ('query_text', 'to_language', 'is_detail_result'):
-            if param in kwargs:
-                raise TranslatorError(f'{param} should not be in `**kwargs`.')
-    kwargs.update({'sleep_seconds': 0})
-
-    n_jobs = os.cpu_count() if n_jobs <= 0 else n_jobs
-
-    pattern = re.compile(r"(?:^|(?<=>))([\s\S]*?)(?:(?=<)|$)")  # TODO: <code></code> <div class="codetext notranslate">
-    sentence_list = list(set(pattern.findall(html_text)))
-    _map_translate_func = lambda sentence: (
-    sentence, translator(query_text=sentence, to_language=to_language, **kwargs))
-
-    with pathos.multiprocessing.ProcessPool(n_jobs) as pool:
-        result_list = pool.map(_map_translate_func, sentence_list)
-
-    result_dict = {text: ts_text for text, ts_text in result_list}
-    _get_result_func = lambda k: result_dict.get(k.group(1), '')
-    return pattern.sub(repl=_get_result_func, string=html_text)
