@@ -1,6 +1,7 @@
 import re
 import time
 import random
+import hashlib
 import urllib.parse
 import warnings
 
@@ -189,21 +190,65 @@ class Baidu(Tse):
 class Youdao(Tse):
     def __init__(self):
         super().__init__()
-        self.host_url = 'https://ai.youdao.com/product-fanyi-text.s'
-        self.api_url = 'https://aidemo.youdao.com/trans'
+        self.host_url = 'https://fanyi.youdao.com'
+        self.api_url = 'https://fanyi.youdao.com/translate_o?smartresult=dict&smartresult=rule'
+        self.get_sign_old_url = 'https://shared.ydstatic.com/fanyi/newweb/v1.0.29/scripts/newweb/fanyi.min.js'
+        self.get_sign_url = None
+        self.get_sign_pattern = 'https://shared.ydstatic.com/fanyi/newweb/(.*?)/scripts/newweb/fanyi.min.js'
         self.host_headers = self.get_headers(self.host_url, if_api=False)
         self.api_headers = self.get_headers(self.host_url, if_api=True)
         self.language_map = None
         self.session = None
+        self.sign_key = None
         self.query_count = 0
         self.output_zh = 'zh-CHS'
         self.input_limit = 5000
 
     def get_language_map(self, host_html, **kwargs):
         et = lxml.etree.HTML(host_html)
-        lang_list = et.xpath('//*[@id="customSelectOption"]/li/a/@val')
-        lang_list = sorted([it.split('2')[1] for it in lang_list if f'{self.output_zh}2' in it])
-        return {**{lang: [self.output_zh] for lang in lang_list}, **{self.output_zh: lang_list}}
+        lang_list = et.xpath('//*[@id="languageSelect"]/li/@data-value')
+        print(lang_list)
+        lang_list = [(x.split('2')[0], [x.split('2')[1]]) for x in lang_list if '2' in x]
+        lang_map = dict(map(lambda x: x, lang_list))
+        lang_map.pop('zh-CHS')
+        lang_map.update({'zh-CHS': list(lang_map.keys())})
+        return lang_map
+
+    def get_sign_key(self, host_html, ss, timeout, proxies):
+        try:
+            if not self.get_sign_url:
+                self.get_sign_url = re.compile(self.get_sign_pattern).search(host_html).group()
+            r = ss.get(self.get_sign_url, headers=self.host_headers, timeout=timeout, proxies=proxies)
+            r.raise_for_status()
+        except:
+            r = ss.get(self.get_sign_old_url, headers=self.host_headers, timeout=timeout, proxies=proxies)
+            r.raise_for_status()
+        sign = re.compile('md5\("fanyideskweb" \+ e \+ i \+ "(.*?)"\)').findall(r.text)
+        return sign[0] if sign and sign != [''] else "Ygy_4c=r#e#4EX^NUGUc5"  # v1.1.10
+
+    def get_form(self, query_text, from_language, to_language, sign_key):
+        ts = str(int(time.time() * 1000))
+        salt = str(ts) + str(random.randrange(0, 10))
+        sign_text = ''.join(['fanyideskweb', query_text, salt, sign_key])
+        sign = hashlib.md5(sign_text.encode()).hexdigest()
+        bv = hashlib.md5(self.api_headers['User-Agent'][8:].encode()).hexdigest()
+        form = {
+            'i': query_text,
+            'from': from_language,
+            'to': to_language,
+            'lts': ts,  # r = "" + (new Date).getTime()
+            'salt': salt,  # i = r + parseInt(10 * Math.random(), 10)
+            'sign': sign,  # n.md5("fanyideskweb" + e + i + "n%A-rKaT5fb[Gy?;N5@Tj"),e=text
+            'bv': bv,  # n.md5(navigator.appVersion)
+            'smartresult': 'dict',
+            'client': 'fanyideskweb',
+            'doctype': 'json',
+            'version': '2.1',
+            'keyfrom': 'fanyi.web',
+            'action': 'FY_BY_REALTlME',  # not time.["FY_BY_REALTlME", "FY_BY_DEFAULT", "FY_BY_CLICKBUTTION", "lan-select"]
+            # 'typoResult': 'false'
+        }
+        return form
 
     def youdao_api(self, query_text: str, from_language: str = 'auto', to_language: str = 'en', **kwargs):
         timeout = kwargs.get('timeout', None)
@@ -213,23 +258,18 @@ class Youdao(Tse):
         update_session_after_seconds = kwargs.get('update_session_after_seconds', self.default_session_seconds)
 
         not_update_cond_time = 1 if time.time() - self.begin_time < update_session_after_seconds else 0
-        if not (self.session and not_update_cond_time and self.language_map):
+        if not (self.session and not_update_cond_time and self.language_map and self.sign_key):
             self.session = requests.Session()
             host_html = self.session.get(self.host_url, headers=self.host_headers, timeout=timeout, proxies=proxies).text
-            self.language_map = self.get_language_map(host_html, from_language=from_language, to_language=to_language)
+            self.sign_key = self.get_sign_key(host_html, self.session, timeout, proxies)
 
-        from_language, to_language = self.check_language(from_language, to_language, self.language_map, output_zh=self.output_zh)
-        if from_language == 'auto':
-            from_language = to_language = 'Auto'
-
-        form_data = {'q': query_text, 'from': from_language, 'to': to_language}
-        form_data = urllib.parse.urlencode(form_data)
-        r = self.session.post(self.api_url, data=form_data, headers=self.api_headers, timeout=timeout, proxies=proxies)
+        form = self.get_form(query_text, from_language, to_language, self.sign_key)
+        r = self.session.post(self.api_url, data=form, headers=self.api_headers, timeout=timeout, proxies=proxies)
         r.raise_for_status()
         data = r.json()
         time.sleep(sleep_seconds)
         self.query_count += 1
-        return data if is_detail_result else data['translation'][0]
+        return data if is_detail_result else '\n'.join([' '.join([it['tgt'] for it in item]) for item in data['translateResult']])
 
 _baidu = Baidu()
 baidu = _baidu.baidu_api
