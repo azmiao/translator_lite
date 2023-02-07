@@ -2,7 +2,6 @@ import re
 import time
 import random
 import urllib.parse
-import hashlib
 import warnings
 
 import lxml.etree
@@ -205,43 +204,6 @@ class Youdao(Tse):
         lang_list = et.xpath('//*[@id="customSelectOption"]/li/a/@val')
         lang_list = sorted([it.split('2')[1] for it in lang_list if f'{self.output_zh}2' in it])
         return {**{lang: [self.output_zh] for lang in lang_list}, **{self.output_zh: lang_list}}
-
-    def get_sign_key(self, ss, host_html, timeout, proxies):
-        try:
-            if not self.get_new_sign_url:
-                self.get_new_sign_url = re.compile(self.get_sign_pattern).search(host_html).group(0)
-            r = ss.get(self.get_new_sign_url, headers=self.host_headers, timeout=timeout, proxies=proxies)
-            r.raise_for_status()
-        except:
-            r = ss.get(self.get_old_sign_url, headers=self.host_headers, timeout=timeout, proxies=proxies)
-            r.raise_for_status()
-        sign = re.compile('md5\("fanyideskweb" \+ e \+ i \+ "(.*?)"\)').findall(r.text)
-        return sign[0] if sign and sign != [''] else "Ygy_4c=r#e#4EX^NUGUc5"  # v1.1.10
-
-    def get_form(self, query_text, from_language, to_language, sign_key):
-        ts = str(int(time.time() * 1000))
-        salt = str(ts) + str(random.randrange(0, 10))
-        sign_text = ''.join(['fanyideskweb', query_text, salt, sign_key])
-        sign = hashlib.md5(sign_text.encode()).hexdigest()
-        bv = hashlib.md5(self.api_headers['User-Agent'][8:].encode()).hexdigest()
-        form = {
-            'i': query_text,
-            'from': from_language,
-            'to': to_language,
-            'lts': ts,  # r = "" + (new Date).getTime()
-            'salt': salt,  # i = r + parseInt(10 * Math.random(), 10)
-            'sign': sign,  # n.md5("fanyideskweb" + e + i + "n%A-rKaT5fb[Gy?;N5@Tj"),e=text
-            'bv': bv,  # n.md5(navigator.appVersion)
-            'smartresult': 'dict',
-            'client': 'fanyideskweb',
-            'doctype': 'json',
-            'version': '2.1',
-            'keyfrom': 'fanyi.web',
-            'action': 'FY_BY_REALTlME',
-            # not time.["FY_BY_REALTlME", "FY_BY_DEFAULT", "FY_BY_CLICKBUTTION", "lan-select"]
-            # 'typoResult': 'false'
-        }
-        return form
 
     def youdao_api(self, query_text: str, from_language: str = 'auto', to_language: str = 'en', **kwargs):
         timeout = kwargs.get('timeout', None)
